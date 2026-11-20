@@ -1,38 +1,41 @@
-# ManaPool automatic repricing — safe staging
+# ManaPool 25-listing live pilot
 
-This package schedules the ManaPool pricing preview with the one-cent-above-low strategy every day at **8 PM Eastern**, including daylight-saving time changes. It does **not** yet write prices. ManaPool's price-update endpoint and schema must be verified before live mode is implemented.
+This folder contains complete replacements/additions for the existing repository. Keep your **existing `inventory.py` unchanged**.
 
 ## Files
 
-- `repricing_preview.py` — full read-only pricing calculation and report generator
-- `scheduled_repricing.py` — schedule-time guard and strict CSV safety validation
-- `.github/workflows/scheduled-repricing.yml` — nightly GitHub Actions workflow
+- `repricing_preview.py` — current $0.01-above-low, $0.75-floor read-only report
+- `scheduled_repricing.py` — existing scheduled preview validation
+- `.github/workflows/scheduled-repricing.yml` — scheduled **read-only** preview
+- `pilot_25.py` — manual live pilot, maximum 25 price-only updates
+- `.github/workflows/pilot-25.yml` — manually triggered live pilot
 
-Keep your existing `inventory.py` in the repository. It is imported by `repricing_preview.py`.
+## Before running
 
-## Installation
-
-Copy the two Python files into your repository root, and copy the workflow into `.github/workflows/`. Commit and push. Your existing GitHub secrets `MANAPOOL_EMAIL` and `MANAPOOL_TOKEN` are used. The schedule uses UTC 00:00 and 01:00 triggers with an America/New_York time guard, so only the 8 PM Eastern run proceeds. GitHub scheduled workflows can run late.
-
-Run manually with `python scheduled_repricing.py` or through GitHub Actions > ManaPool Scheduled Repricing (Safe Preview) > Run workflow.
-
-## Pricing rules
-
-- If current price is below $0.75, target $0.75.
-- If current price is greater than the reported market low, target `max($0.75, market low + $0.01)`; if this equals current price, leave it unchanged.
-- If current price is equal to or below the reported market low, leave it unchanged (unless below the floor). This avoids repeatedly raising your own lowest listing.
-- Missing market data is flagged for review, except for the floor correction.
-- ManaPool market low may include your own listing; this does not identify the lowest competing seller.
+1. Review that `MANAPOOL_EMAIL` and `MANAPOOL_TOKEN` are configured as repository secrets. **The token must have inventory:write access.** Never paste it into chat or commit it.
+2. Replace/add the files in the repository (including the hidden `.github` directory).
+3. Commit and push to `main`.
+4. Go to **Actions → ManaPool Live Pilot - 25 Price Updates → Run workflow**.
+5. Enter `CONFIRM_25_PRICE_UPDATES` and run. This is a real write operation, not a preview.
+6. Download the `manapool-pilot-...` artifact and inspect `pilot_25_results.csv`.
+7. Verify prices and quantities in ManaPool before any larger rollout.
 
 ## Safety
 
-- Zero-quantity listings are excluded.
-- All proposed targets must be at least $0.75.
-- Price increases and decreases must move in the expected direction.
-- Missing/duplicate product IDs cause the run to fail.
-- No quantity writes exist.
-- Setting `REPRICING_MODE=live` fails immediately and never sends a write request.
+- Hard cap **25** per invocation; no loop or automatic scheduling of this pilot.
+- A fresh report is generated, and seller inventory is fetched again before writes.
+- Aborts without writing if selected listings' prices or quantities changed before preflight.
+- Writes `{"price_cents": <target>, "quantity": null}` only, per documented endpoint.
+- Checks returned product ID, price and quantity after each update; stops on first failure.
+- A network timeout leaves outcome unknown: inspect ManaPool and the journal before retrying.
+- `pilot_25_results.csv` is flushed after every attempted update, but GitHub artifact upload happens after the job.
+- The 8 PM Eastern workflow **remains preview-only**. This pilot does not turn on unattended writes.
 
-## To enable live automation
+## Pricing rules
 
-Provide the official ManaPool **seller price-update endpoint documentation**, including HTTP method, request body, authentication, whether quantity is optional, rate limits, and response shape. The write implementation must re-fetch current inventory, verify each listing's current price and quantity, limit per-run decreases, apply price-only writes in small batches, and verify each result before enabling the scheduled live mode.
+- Price floor is 75 cents.
+- If price is already at/below market low, do not lower it unless below floor.
+- If price is above market low, target max(75, market low + 1) cents.
+- A reported market low can include your own listing; the pilot cannot isolate competitor prices.
+
+**Note:** The pilot uses the first 25 eligible products in sorted product-ID order, which may all be floor increases. No particular card selection is promised. The API response verifies the update but is not an independent post-write GET check.
