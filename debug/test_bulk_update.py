@@ -1,4 +1,7 @@
 import unittest
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from full_repricing import verify_bulk_response
 def candidate(pid, price=75, qty=2):
     return ({'product_id': pid}, 15, price, qty)

@@ -1,5 +1,8 @@
 """Run locally with: python -m unittest test_repricing_safety.py"""
 import unittest
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from unittest.mock import patch
 from repricing_preview import proposed_price
 

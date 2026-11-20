@@ -52,3 +52,30 @@ The internal deadline is 125 minutes, ahead of the GitHub Actions 150-minute job
 ## Bulk update
 
 Uses `POST /seller/inventory/product` with batches of at most 1000. Each entry includes `quantity: null` to preserve inventory quantities. Every returned product is verified against the intended price and original quantity; skipped or missing results stop the run. Network failures are not automatically retried because the outcome may be unknown. Earlier successful batches remain applied. Run manually and verify before enabling nightly scheduling.
+
+
+## Repository layout
+
+```text
+manapool_repricer/
+├── .github/workflows/
+│   ├── scheduled-repricing.yml
+│   └── emergency-restore.yml
+├── debug/
+│   ├── README.md
+│   ├── test_bulk_update.py
+│   └── test_repricing_safety.py
+├── .gitignore
+├── README.md
+├── account_visibility.py
+├── full_repricing.py
+├── inventory.py                 # Keep your existing file; not included
+├── recover_visibility.py
+└── repricing_preview.py
+```
+
+All debugging and test files are in `debug/`; production scripts remain in the root so GitHub Actions works without workflow changes. Local logs and CSV outputs are ignored by Git. GitHub Actions still uploads CSV reports as workflow artifacts.
+
+Run tests from the repository root: `python -m unittest discover -s debug -p 'test_*.py'`.
+
+**Cleanup of previously committed files:** after extracting and committing, remove the old root-level `test_bulk_update.py` and `test_repricing_safety.py` if Git still tracks them (`git rm test_bulk_update.py test_repricing_safety.py`). Do not delete your existing `inventory.py`.
