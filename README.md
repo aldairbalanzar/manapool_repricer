@@ -10,7 +10,7 @@ This package replaces the old **read-only scheduled workflow** with an **opt-in*
 - If already at or below market low, leave unchanged (except floor).
 - The reported low can include your own listing. This is **not** a competitor-only price.
 - Write ONLY `{ "price_cents": target, "quantity": null }`. Never modify quantities.
-- Bulk POST requests of up to 500 listings, up to 10,000 eligible changes per run. Stop on API errors or verification mismatches. Skip stale listings detected during periodic inventory refreshes.
+- Bulk POST requests of up to 1000 listings, up to 10,000 eligible changes per run. Stop on API errors or verification mismatches. Skip stale listings detected during periodic inventory refreshes.
 
 ## Install
 
@@ -51,4 +51,4 @@ The internal deadline is 125 minutes, ahead of the GitHub Actions 150-minute job
 
 ## Bulk update
 
-Uses `POST /seller/inventory/product` with batches of at most 500. Each entry includes `quantity: null` to preserve inventory quantities. Every returned product is verified against the intended price and original quantity; skipped or missing results stop the run. Network failures are not automatically retried because the outcome may be unknown. Earlier successful batches remain applied. Run manually and verify before enabling nightly scheduling.
+Uses `POST /seller/inventory/product` with batches of at most 1000. Each entry includes `quantity: null` to preserve inventory quantities. Every returned product is verified against the intended price and original quantity; skipped or missing results stop the run. Network failures are not automatically retried because the outcome may be unknown. Earlier successful batches remain applied. Run manually and verify before enabling nightly scheduling.

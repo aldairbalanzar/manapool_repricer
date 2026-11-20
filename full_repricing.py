@@ -25,7 +25,7 @@ JOURNAL = Path('repricing_updates.csv')
 FIELDS = ['timestamp_utc','product_id','card_name','action','old_price_cents','target_price_cents',
           'quantity_before','quantity_after','status','details']
 MAX_UPDATES = 10000
-BATCH_SIZE = 500
+BATCH_SIZE = 1000
 PAUSE_SECONDS = 1.0
 DEADLINE_SECONDS = 125 * 60  # Must finish before Actions 150-minute timeout.
 
