@@ -25,8 +25,8 @@ JOURNAL = Path('repricing_updates.csv')
 FIELDS = ['timestamp_utc','product_id','card_name','action','old_price_cents','target_price_cents',
           'quantity_before','quantity_after','status','details']
 MAX_UPDATES = 10000
-REFRESH_EVERY = 100
-PAUSE_SECONDS = 0.35
+BATCH_SIZE = 500
+PAUSE_SECONDS = 1.0
 DEADLINE_SECONDS = 125 * 60  # Must finish before Actions 150-minute timeout.
 
 
@@ -85,6 +85,46 @@ def check_fresh(row, old, qty, current):
             str(current.get('product_type') or 'mtg_single') == 'mtg_single')
 
 
+def make_record(row, old, target, qty, status, details=''):
+    return dict(timestamp_utc=datetime.now(timezone.utc).isoformat(),
+                product_id=row['product_id'], card_name=row['card_name'],
+                action=row['action'], old_price_cents=old,
+                target_price_cents=target, quantity_before=qty,
+                quantity_after='', status=status, details=details)
+
+
+def verify_bulk_response(selected, body):
+    """Validate every returned item, without assuming a 200 means full success."""
+    if not isinstance(body, dict) or not isinstance(body.get('inventory'), list) or not isinstance(body.get('skipped'), list):
+        raise ValueError('Missing bulk response arrays')
+    expected = {row['product_id']: (target, qty) for row, old, target, qty in selected}
+    returned = {}
+    for item in body['inventory']:
+        if not isinstance(item, dict):
+            raise ValueError('Malformed inventory entry')
+        pid = item.get('product_id')
+        if pid not in expected or pid in returned:
+            raise ValueError('Unexpected or duplicate inventory product ID')
+        target, qty = expected[pid]
+        raw_price, raw_qty = item.get('price_cents'), item.get('quantity')
+        valid = (item.get('product_type') == 'mtg_single' and
+                 type(raw_price) in (int, float) and raw_price == target and
+                 type(raw_qty) in (int, float) and raw_qty == qty)
+        returned[pid] = ('VERIFIED_RESPONSE' if valid else 'VERIFY_FAILED',
+                         '' if valid else 'Returned price, type, or quantity mismatch', raw_qty)
+    skipped = {}
+    for item in body['skipped']:
+        if not isinstance(item, dict):
+            raise ValueError('Malformed skipped entry')
+        pid = item.get('product_id')
+        if pid not in expected or pid in returned or pid in skipped:
+            raise ValueError('Unexpected or duplicate skipped product ID')
+        skipped[pid] = ('API_SKIPPED', str(item.get('reason', 'Unknown reason')), '')
+    return {pid: returned.get(pid) or skipped.get(pid) or
+            ('MISSING_RESPONSE', 'Product absent from response', '') for pid in expected}
+
+
+
 def run_updates():
     start = time.monotonic()
     if REPORT.exists():
@@ -107,55 +147,76 @@ def run_updates():
                             'X-ManaPool-Access-Token': os.environ['MANAPOOL_TOKEN'],
                             'Accept':'application/json','Content-Type':'application/json'})
     verified = 0
-    skipped = 0
+    stale = 0
+    batches = (len(candidates) + BATCH_SIZE - 1) // BATCH_SIZE
     with JOURNAL.open('w', newline='', encoding='utf-8') as file:
         writer = csv.DictWriter(file, fieldnames=FIELDS)
         writer.writeheader()
         file.flush()
-        for i, (row, old, target, qty) in enumerate(candidates):
+        for batch_no, offset in enumerate(range(0, len(candidates), BATCH_SIZE), 1):
             if time.monotonic() - start > DEADLINE_SECONDS:
-                raise RuntimeError('Internal runtime deadline reached; stopping and restoring visibility')
-            pid = row['product_id']
-            if i and i % REFRESH_EVERY == 0:
-                log('INFO', f'Refreshing inventory before update {i+1}/{len(candidates)}')
-                fresh = fetch_inventory()
-            stamp = datetime.now(timezone.utc).isoformat()
-            record = dict(timestamp_utc=stamp, product_id=pid, card_name=row['card_name'],
-                          action=row['action'], old_price_cents=old, target_price_cents=target,
-                          quantity_before=qty, quantity_after='', status='', details='')
-            if not check_fresh(row, old, qty, fresh.get(pid)):
-                record.update(status='SKIPPED_STALE', details='Price, quantity, or product type changed')
-                writer.writerow(record); file.flush()
-                skipped += 1
+                raise RuntimeError('Internal runtime deadline reached; restoring visibility')
+            # Re-fetch before each batch to avoid writing stale prices or quantities.
+            fresh = fetch_inventory()
+            selected = []
+            for row, old, target, qty in candidates[offset:offset+BATCH_SIZE]:
+                if not check_fresh(row, old, qty, fresh.get(row['product_id'])):
+                    writer.writerow(make_record(row, old, target, qty, 'SKIPPED_STALE',
+                                                'Price, quantity, or product type changed'))
+                    stale += 1
+                else:
+                    selected.append((row, old, target, qty))
+            file.flush()
+            if not selected:
                 continue
-            log('INFO', f'Update {i+1}/{len(candidates)}: {pid} {old}c -> {target}c')
+            payload = [
+                {'product_type': 'mtg_single', 'product_id': row['product_id'],
+                 'price_cents': target, 'quantity': None}
+                for row, old, target, qty in selected
+            ]
+            log('INFO', f'Bulk batch {batch_no}/{batches}: writing {len(payload)} prices')
             try:
-                response = session.put(f'{BASE}/seller/inventory/product/mtg_single/{pid}',
-                                       json={'price_cents': target, 'quantity': None}, timeout=25)
+                response = session.post(f'{BASE}/seller/inventory/product',
+                                        json=payload, timeout=90)
             except requests.RequestException as exc:
-                record.update(status='UNKNOWN_NETWORK', details=type(exc).__name__)
-                writer.writerow(record); file.flush()
-                raise RuntimeError('Network failure; write outcome unknown. STOP and inspect journal') from exc
+                for row, old, target, qty in selected:
+                    writer.writerow(make_record(row, old, target, qty, 'UNKNOWN_NETWORK',
+                                                type(exc).__name__))
+                file.flush()
+                raise RuntimeError('Bulk write outcome unknown; STOP and inspect inventory') from exc
             if response.status_code != 200:
-                record.update(status='HTTP_ERROR', details=f'HTTP {response.status_code}')
-                writer.writerow(record); file.flush()
-                raise RuntimeError(f'Price write failed: HTTP {response.status_code} for {pid}')
+                for row, old, target, qty in selected:
+                    writer.writerow(make_record(row, old, target, qty, 'HTTP_ERROR',
+                                                f'HTTP {response.status_code}'))
+                file.flush()
+                raise RuntimeError(f'Bulk batch {batch_no} failed: HTTP {response.status_code}')
             try:
-                item = response.json()['inventory']
-                returned_qty = item['quantity']
-                valid = (item['product_id'] == pid and parse_cents(item['price_cents']) == target
-                         and type(returned_qty) is int and returned_qty == qty)
-            except (ValueError, TypeError, KeyError):
-                valid, returned_qty = False, ''
-            record.update(status='VERIFIED_RESPONSE' if valid else 'VERIFY_FAILED', quantity_after=returned_qty)
-            writer.writerow(record); file.flush()
-            if not valid:
-                raise RuntimeError(f'Unexpected update response for {pid}; stopping')
-            verified += 1
-            if verified % 100 == 0:
-                log('SUCCESS', f'Progress: {verified} verified, {skipped} skipped')
+                body = response.json()
+                outcomes = verify_bulk_response(selected, body)
+            except (ValueError, TypeError, KeyError) as exc:
+                for row, old, target, qty in selected:
+                    writer.writerow(make_record(row, old, target, qty, 'VERIFY_FAILED',
+                                                'Invalid bulk response'))
+                file.flush()
+                raise RuntimeError('Bulk response invalid; inspect inventory before retrying') from exc
+            failed = []
+            for row, old, target, qty in selected:
+                status, details, returned_qty = outcomes[row['product_id']]
+                record = make_record(row, old, target, qty, status, details)
+                record['quantity_after'] = returned_qty
+                writer.writerow(record)
+                if status == 'VERIFIED_RESPONSE':
+                    verified += 1
+                else:
+                    failed.append(row['product_id'])
+            file.flush()
+            if failed:
+                raise RuntimeError(f'Bulk batch {batch_no}: {len(failed)} unverified/skipped '
+                                   'items; stopping. Review journal before retrying.')
+            log('SUCCESS', f'Batch {batch_no}/{batches} verified: {len(selected)}; '
+                           f'total verified={verified}, stale skipped={stale}')
             time.sleep(PAUSE_SECONDS)
-    log('SUCCESS', f'Completed: {verified} verified updates, {skipped} skipped stale')
+    log('SUCCESS', f'Completed: {verified} verified updates, {stale} skipped stale')
 
 
 def main():

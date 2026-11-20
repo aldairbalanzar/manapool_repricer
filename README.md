@@ -10,7 +10,7 @@ This package replaces the old **read-only scheduled workflow** with an **opt-in*
 - If already at or below market low, leave unchanged (except floor).
 - The reported low can include your own listing. This is **not** a competitor-only price.
 - Write ONLY `{ "price_cents": target, "quantity": null }`. Never modify quantities.
-- One listing per API request, up to 10,000 eligible changes per run. Stop on API errors or verification mismatches. Skip stale listings detected during periodic inventory refreshes.
+- Bulk POST requests of up to 500 listings, up to 10,000 eligible changes per run. Stop on API errors or verification mismatches. Skip stale listings detected during periodic inventory refreshes.
 
 ## Install
 
@@ -40,10 +40,15 @@ The internal deadline is 125 minutes, ahead of the GitHub Actions 150-minute job
 
 ## Operational precautions
 
-- The first full run could take over an hour; the store is offline while it runs.
-- A journal is written and flushed after each update. `VERIFIED_RESPONSE` confirms price and quantity in the PUT response, not a later independent GET.
+- The first full run may take several minutes or longer; the store is offline while it runs.
+- A journal is written and flushed after each bulk batch. `VERIFIED_RESPONSE` confirms price and quantity in the bulk POST response, not a later independent GET.
 - Do not manually change listings while the repricer runs.
-- Because prices are derived from a snapshot, market changes during a run may make targets stale. Each update checks inventory freshness, but does not fetch the catalog low again per card.
+- Because prices are derived from a snapshot, market changes during a run may make targets stale. Each batch checks inventory freshness, but does not fetch the catalog low again per card.
 - If an update fails, the script stops and restores original visibility. Earlier successful changes remain in place; rerunning recalculates from current inventory.
 - Review `repricing_updates.csv` for `SKIPPED_STALE`, `UNKNOWN_NETWORK`, `HTTP_ERROR`, or `VERIFY_FAILED` statuses.
 - GitHub Actions workflow concurrency prevents overlapping price-update runs. The emergency recovery workflow intentionally bypasses this lock.
+
+
+## Bulk update
+
+Uses `POST /seller/inventory/product` with batches of at most 500. Each entry includes `quantity: null` to preserve inventory quantities. Every returned product is verified against the intended price and original quantity; skipped or missing results stop the run. Network failures are not automatically retried because the outcome may be unknown. Earlier successful batches remain applied. Run manually and verify before enabling nightly scheduling.
