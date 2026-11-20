@@ -14,7 +14,7 @@ This package replaces the old **read-only scheduled workflow** with an **opt-in*
 
 ## Install
 
-Copy `full_repricing.py`, `account_visibility.py`, `repricing_preview.py`, `recover_visibility.py` and `.github/workflows/` into the root of your existing `manapool_repricer` repo. Keep your `inventory.py` and existing GitHub secrets `MANAPOOL_EMAIL`, `MANAPOOL_TOKEN`. The token must have inventory-write and seller-settings-write permissions. **Delete/disable the older pilot-25 workflow** to avoid accidentally running it.
+Copy `full_repricing.py`, `account_visibility.py`, `repricing_preview.py` and `.github/workflows/` into the root of your existing `manapool_repricer` repo. Keep your `inventory.py` and existing GitHub secrets `MANAPOOL_EMAIL`, `MANAPOOL_TOKEN`. The token must have inventory-write and seller-settings-write permissions. **Delete/disable the older pilot-25 workflow** to avoid accidentally running it.
 
 Commit and push to `main`. Merely pushing does **not** enable nightly live updates. The scheduled workflow will run but reject live writes until enabled.
 
@@ -70,7 +70,6 @@ manapool_repricer/
 ├── account_visibility.py
 ├── full_repricing.py
 ├── inventory.py                 # Keep your existing file; not included
-├── recover_visibility.py
 └── repricing_preview.py
 ```
 
