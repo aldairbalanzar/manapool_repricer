@@ -1,132 +1,38 @@
-# ManaPool Repricer
+# ManaPool automatic repricing — safe staging
 
-A Python and GitHub Actions project for reviewing and safely repricing existing **Magic: The Gathering** listings on ManaPool.
+This package schedules the ManaPool pricing preview with the one-cent-above-low strategy every day at **8 PM Eastern**, including daylight-saving time changes. It does **not** yet write prices. ManaPool's price-update endpoint and schema must be verified before live mode is implemented.
 
-> **Status: Early development.** The only implemented feature in this starter project is a manually triggered, **read-only inventory connectivity test**. The pricing engine, report, email delivery, approval flow, and price updates described below are planned, **not yet implemented**. ManaPool market-price and price-write capabilities still need verification.
+## Files
 
-## Project goals
+- `repricing_preview.py` — full read-only pricing calculation and report generator
+- `scheduled_repricing.py` — schedule-time guard and strict CSV safety validation
+- `.github/workflows/scheduled-repricing.yml` — nightly GitHub Actions workflow
 
-- Analyze the seller's existing ManaPool inventory once per day.
-- Recommend competitive listing prices without going below a configured floor.
-- Generate **one** `repricing_report.csv` containing all listings, proposed changes, and review flags.
-- Email that CSV to the configured recipient after the daily report is generated successfully.
-- Require explicit approval before changing any prices.
-- **Never intentionally create listings, delete listings, or change inventory quantities.**
-- Stop on unexpected mismatches and provide clear, color-coded GitHub Actions logs.
+Keep your existing `inventory.py` in the repository. It is imported by `repricing_preview.py`.
 
-## Planned daily workflow
+## Installation
 
-1. GitHub Actions starts at **8:00 PM America/New_York** (Eastern Time), once per day. Scheduled runs may start late.
-2. The Python script reads the full ManaPool inventory, using pagination.
-3. It retrieves comparable market-low prices, matching the exact card and relevant printing/condition attributes (subject to available ManaPool data).
-4. It calculates proposed prices and flags potentially undervalued listings.
-5. It creates a single `repricing_report.csv` and emails it to the configured address.
-6. The daily job **does not update inventory**. Price changes require a separate, manually initiated approval/apply workflow.
-7. Before and after approved changes, the apply workflow validates listing identities, prices, and quantities; it stops on unexpected differences and performs read-only reconciliation after uncertain outcomes.
+Copy the two Python files into your repository root, and copy the workflow into `.github/workflows/`. Commit and push. Your existing GitHub secrets `MANAPOOL_EMAIL` and `MANAPOOL_TOKEN` are used. The schedule uses UTC 00:00 and 01:00 triggers with an America/New_York time guard, so only the 8 PM Eastern run proceeds. GitHub scheduled workflows can run late.
 
-## Planned pricing rules
+Run manually with `python scheduled_repricing.py` or through GitHub Actions > ManaPool Scheduled Repricing (Safe Preview) > Run workflow.
 
-| Setting | Planned value |
-| --- | --- |
-| Minimum listing price | `$0.75` |
-| Undercut amount | `$0.01` |
-| Target price | `max($0.75, market_low - $0.01)` |
-| Below-market flag | Current price is at least 20% below market low **and** market low is greater than `$5.00` |
-| Automatic price updates | Disabled |
-| Approval required | Yes |
-| Initial update batch size | 25 listings |
+## Pricing rules
 
-Prices will be calculated with decimal-safe arithmetic. Comparable listings must be matched accurately, and the repricer should avoid unnecessary price reductions when a seller is already the lowest-priced listing. The market-low data source and write/update mechanism must be verified before live repricing is enabled.
+- If current price is below $0.75, target $0.75.
+- If current price is greater than the reported market low, target `max($0.75, market low + $0.01)`; if this equals current price, leave it unchanged.
+- If current price is equal to or below the reported market low, leave it unchanged (unless below the floor). This avoids repeatedly raising your own lowest listing.
+- Missing market data is flagged for review, except for the floor correction.
+- ManaPool market low may include your own listing; this does not identify the lowest competing seller.
 
-## Planned report
+## Safety
 
-A single CSV, `repricing_report.csv`, will contain all inventory listings, including unchanged listings. Planned snake_case fields include:
+- Zero-quantity listings are excluded.
+- All proposed targets must be at least $0.75.
+- Price increases and decreases must move in the expected direction.
+- Missing/duplicate product IDs cause the run to fail.
+- No quantity writes exist.
+- Setting `REPRICING_MODE=live` fails immediately and never sends a write request.
 
-`sku`, `card_name`, `set_code`, `condition`, `foil_status`, `quantity`, `current_price`, `market_low`, `target_price`, `price_difference`, `below_market_pct`, `is_below_market`, `approved`, `verification_status`.
+## To enable live automation
 
-The report will also contain enough run/snapshot metadata to validate an approval against fresh inventory. Boolean values will use `true` and `false`, not `YES` or `NO`. An empty `approved` field means no approval was granted.
-
-## Planned safety controls
-
-- Use a **read-only ManaPool token** for inventory retrieval and preview/report generation.
-- Keep any future write-enabled credentials separate and limited to the manual apply workflow.
-- Compare inventory identities and quantities before submitting updates.
-- Prefer verified **price-only** updates; do not use an import path until its duplicate-listing and quantity semantics are confirmed safe.
-- Submit updates sequentially in batches of up to 25, validating each batch before proceeding.
-- Halt on mismatches; don't blindly retry uncertain writes or automatically alter quantities to reconcile them.
-- Prevent concurrent approval runs.
-- Use logs with normal-color INFO, green SUCCESS, bright yellow WARNING, red ERROR, and purple CRITICAL messages.
-
-Real sales may change quantities while the workflow is running; reconciliation must distinguish legitimate sales from unintended repricer changes where possible.
-
-## Repository structure (current)
-
-```text
-manapool_repricer/
-├── .github/
-│   └── workflows/
-│       └── test-inventory.yml  # Manual read-only connectivity test
-├── inventory.py                # Fetches all inventory pages and prints counts
-├── requirements.txt            # Python dependencies
-└── README.md
-```
-
-## Getting started: current read-only test
-
-1. Create a **private** GitHub repository and add these files.
-2. In **Settings → Secrets and variables → Actions**, configure repository secrets:
-   - `MANAPOOL_EMAIL`: ManaPool account email.
-   - `MANAPOOL_TOKEN`: ManaPool API token with read-only inventory access.
-3. Open **Actions → Test ManaPool Inventory (Read Only) → Run workflow**.
-4. Inspect the logs. A successful run prints the number of pages and listings retrieved, without printing individual cards or modifying inventory.
-
-The current workflow is **manual only**; no daily schedule or email delivery is enabled yet.
-
-### Run locally (optional)
-
-Requires Python 3.12+.
-
-```bash
-python -m pip install -r requirements.txt
-export MANAPOOL_EMAIL='your-account-email'
-export MANAPOOL_TOKEN='your-read-only-token'
-python inventory.py
-```
-
-Do not commit credentials, `.env` files containing secrets, or exported inventory reports. Use GitHub Actions Secrets for workflow credentials. Email delivery will require its own authenticated sending method; connecting Gmail to ChatGPT does not automatically authorize GitHub Actions to send mail.
-
-## Implementation roadmap
-
-- [x] Create read-only inventory test script and manual GitHub Actions workflow (starter files prepared; live run not yet verified).
-- [ ] Verify ManaPool inventory retrieval against the account and confirm response/pagination behavior.
-- [ ] Verify access to comparable market-low pricing.
-- [ ] Implement pricing calculations, matching rules, and unit tests.
-- [ ] Generate the single CSV report.
-- [ ] Add once-daily **8 PM Eastern** GitHub Actions schedule.
-- [ ] Configure authenticated email delivery with CSV attachment and failure handling.
-- [ ] Verify a safe price-only update path with ManaPool.
-- [ ] Implement explicit approval, preflight checks, sequential batches, post-update verification, and reconciliation.
-- [ ] Test with mock data, a live read-only run, and a controlled approved update before broader rollout.
-
-## Non-goals
-
-This project is **not** an inventory import/synchronization tool. It must not add cards, remove cards, change quantities, or automatically approve repricing changes.
-
-## Inventory integrity validation (current milestone)
-
-The manual **Test ManaPool Inventory (Read Only)** workflow now checks the API's reported total, pagination cursor repetition, missing/duplicate `product_id` values, and listing quantities. It does **not** change inventory or perform a CSV comparison unless a CSV is explicitly supplied.
-
-For an exact reconciliation against a downloaded ManaPool inventory export, run locally with the same read-only credentials set as environment variables:
-
-```bash
-python -m pip install -r requirements.txt
-python inventory.py --compare-csv /path/to/inventory-manapool.csv
-```
-
-The CSV must contain `product_id` and `quantity`. The comparison reports counts and up to ten examples of API-only IDs, CSV-only IDs, and mismatched quantities. Any discrepancy exits with an error. CSV exports may represent a different snapshot in time; normal sales and manual edits can cause differences. Never commit an inventory CSV or credentials to GitHub. The GitHub workflow intentionally runs API integrity validation only; for a CSV comparison, use the local command.
-
-## Credential validation (implemented)
-
-Before requesting inventory, `inventory.py` checks that `MANAPOOL_EMAIL` and `MANAPOOL_TOKEN` are present and nonempty. It logs only the variable names and whether each is configured; it never prints credential values. Missing credentials stop the run immediately. A successful inventory API response additionally verifies that ManaPool accepted the credentials.
-
-In GitHub, configure both under **Settings → Secrets and variables → Actions**. The workflow passes them to the script only for the inventory test step.
+Provide the official ManaPool **seller price-update endpoint documentation**, including HTTP method, request body, authentication, whether quantity is optional, rate limits, and response shape. The write implementation must re-fetch current inventory, verify each listing's current price and quantity, limit per-run decreases, apply price-only writes in small batches, and verify each result before enabling the scheduled live mode.

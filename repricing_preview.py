@@ -1,4 +1,4 @@
-"""Read-only ManaPool repricing report; no inventory writes are performed."""
+"""Read-only ManaPool repricing report: $0.01 above low, $0.75 floor, no writes."""
 
 import csv
 import os
@@ -18,7 +18,7 @@ BATCH_SIZE = 100
 REQUEST_TIMEOUT = 120
 REQUEST_DELAY_SECONDS = 0.25
 MIN_PRICE_CENTS = 75
-UNDERCUT_CENTS = 1
+ABOVE_LOW_CENTS = 1
 BELOW_MARKET_THRESHOLD = Decimal("0.20")
 BELOW_MARKET_MIN_CENTS = 500
 LANGUAGES = [
@@ -130,13 +130,14 @@ def fetch_market_prices(active_inventory):
 
 
 def proposed_price(current_cents, market_low_cents):
-    """Return (target cents, action, status), never lowering at/below market low."""
+    """Target 1 cent ABOVE the reported low, without chasing our own price.
+
+    Never change an at/below-low listing except to enforce the $0.75 floor.
+    The reported low may include our own listing; it is not a competitor-only low.
+    """
     if current_cents is None:
         return None, "review", "missing_current_price"
-    # Absolute floor has priority even if market data is unavailable.
     if current_cents < MIN_PRICE_CENTS:
-        if market_low_cents is None or market_low_cents == 0:
-            return MIN_PRICE_CENTS, "floor_increase", "floor_increase_market_unavailable"
         return MIN_PRICE_CENTS, "floor_increase", "floor_increase"
     if market_low_cents is None:
         return current_cents, "review", "missing_market_low"
@@ -144,10 +145,10 @@ def proposed_price(current_cents, market_low_cents):
         return current_cents, "review", "zero_market_low"
     if current_cents <= market_low_cents:
         return current_cents, "unchanged", "already_at_or_below_market_low"
-    target = max(MIN_PRICE_CENTS, market_low_cents - UNDERCUT_CENTS)
+    target = max(MIN_PRICE_CENTS, market_low_cents + ABOVE_LOW_CENTS)
     if target < current_cents:
-        return target, "competitive_decrease", "competitive_decrease"
-    return current_cents, "unchanged", "already_at_minimum"
+        return target, "competitive_decrease", "one_cent_above_market_low"
+    return current_cents, "unchanged", "already_one_cent_above_market_low"
 
 
 def generate_report(active_inventory, variant_index):
@@ -187,7 +188,7 @@ def generate_report(active_inventory, variant_index):
             status = "unmatched_product_floor_increase" if action == "floor_increase" else "unmatched_product"
             if action != "floor_increase":
                 action = "review"
-        # A low-price tie might include our own listing; no undercut is proposed.
+        # A low-price tie might include our own listing; no price change is proposed.
         possible_self_undercut = market_valid and current == market
         row = {
             "product_id": product_id,

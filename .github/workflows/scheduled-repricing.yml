@@ -1,0 +1,42 @@
+name: ManaPool Scheduled Repricing (Safe Preview)
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Run at 8 PM America/New_York across DST changes.
+    # Both UTC hours trigger; Python skips the non-8-PM run.
+    - cron: '0 0,1 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: manapool-scheduled-repricing
+  cancel-in-progress: false
+
+jobs:
+  reprice:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      MANAPOOL_EMAIL: ${{ secrets.MANAPOOL_EMAIL }}
+      MANAPOOL_TOKEN: ${{ secrets.MANAPOOL_TOKEN }}
+      REPRICING_MODE: preview
+      SCHEDULED_RUN: ${{ github.event_name == 'schedule' && '1' || '0' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: python -m pip install 'requests>=2.31,<3'
+      - name: Generate and validate repricing report
+        run: python scheduled_repricing.py
+      - name: Upload report for review
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: repricing-report-${{ github.run_id }}
+          path: repricing_report.csv
+          if-no-files-found: ignore
+          retention-days: 30
