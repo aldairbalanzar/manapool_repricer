@@ -1,29 +1,70 @@
-"""Read-only ManaPool inventory connectivity test."""
+"""Read-only ManaPool inventory integrity check; optional comparison with a local CSV."""
+import argparse
+import csv
 import os
 import sys
+from collections import Counter
+from decimal import Decimal, InvalidOperation
+from pathlib import Path
 
 import requests
 
 URL = "https://manapool.com/api/v1/seller/inventory"
+KEY = "product_id"
 
 
-def main() -> None:
-    email = os.environ.get("MANAPOOL_EMAIL")
-    token = os.environ.get("MANAPOOL_TOKEN")
-    if not email or not token:
-        raise RuntimeError("Missing MANAPOOL_EMAIL or MANAPOOL_TOKEN secret")
+def quantity(row):
+    try:
+        number = Decimal(str(row.get("quantity", "")))
+        if number != number.to_integral_value() or number < 0:
+            raise ValueError
+        return int(number)
+    except (InvalidOperation, TypeError, ValueError):
+        raise ValueError("Invalid or missing quantity") from None
 
+
+def index_rows(rows, label):
+    indexed = {}
+    duplicates = []
+    for i, row in enumerate(rows, 1):
+        if not isinstance(row, dict):
+            raise ValueError(f"{label}: non-object listing at position {i}")
+        identifier = str(row.get(KEY) or "").strip()
+        if not identifier:
+            raise ValueError(f"{label}: missing {KEY} at position {i}")
+        if identifier in indexed:
+            duplicates.append(identifier)
+        else:
+            indexed[identifier] = row
+    if duplicates:
+        print(f"ERROR    {label}: {len(duplicates)} duplicate {KEY} occurrences; examples: {', '.join(duplicates[:5])}")
+        raise ValueError(f"{label}: duplicate product IDs")
+    total_quantity = sum(quantity(row) for row in indexed.values())
+    print(f"SUCCESS  {label}: {len(indexed)} unique product IDs; {total_quantity} total cards")
+    return indexed
+
+
+def validate_credentials():
+    """Verify credential presence without logging or returning their contents."""
+    print("INFO     Validating ManaPool credentials", flush=True)
+    missing = []
+    for name in ("MANAPOOL_EMAIL", "MANAPOOL_TOKEN"):
+        if not (os.getenv(name) or "").strip():
+            print(f"ERROR    {name} is missing or empty", flush=True)
+            missing.append(name)
+        else:
+            print(f"SUCCESS  {name} is configured", flush=True)
+    if missing:
+        raise RuntimeError("Credential validation failed; API request not attempted")
+
+
+def fetch_inventory():
+    validate_credentials()
+    email, token = os.environ["MANAPOOL_EMAIL"], os.environ["MANAPOOL_TOKEN"]
     session = requests.Session()
-    session.headers.update({
-        "X-ManaPool-Email": email,
-        "X-ManaPool-Access-Token": token,
-    })
-    inventory_count = 0
-    page_count = 0
-    cursor = None
-    seen_cursors = set()
-    expected_total = None
-
+    session.headers.update({"X-ManaPool-Email": email, "X-ManaPool-Access-Token": token})
+    cursor, cursors, records, expected_total = None, set(), [], None
+    page = 0
     while True:
         params = {"limit": 1000}
         if cursor is not None:
@@ -31,35 +72,90 @@ def main() -> None:
         response = session.get(URL, params=params, timeout=45)
         response.raise_for_status()
         payload = response.json()
-        items = payload["inventory"]
-        pagination = payload["pagination"]
-        if not isinstance(items, list):
-            raise ValueError("Unexpected inventory response")
-        if expected_total is None:
-            expected_total = pagination.get("total")
-        inventory_count += len(items)
-        page_count += 1
-        print(f"INFO     Page {page_count}: {len(items)} listings received")
+        items, pagination = payload["inventory"], payload["pagination"]
+        if not isinstance(items, list) or not isinstance(pagination, dict):
+            raise ValueError("Unexpected API response structure")
+        reported = pagination.get("total")
+        if reported is not None:
+            try:
+                reported = int(reported)
+            except (TypeError, ValueError):
+                raise ValueError("Invalid API pagination total") from None
+            if expected_total is None:
+                expected_total = reported
+            elif reported != expected_total:
+                raise ValueError("API pagination total changed during retrieval")
+        records.extend(items)
+        page += 1
+        print(f"INFO     Page {page}: {len(items)} listings received")
         next_cursor = pagination.get("next_cursor")
         if not next_cursor:
             break
-        if next_cursor in seen_cursors:
-            raise RuntimeError("Repeated pagination cursor detected")
-        seen_cursors.add(next_cursor)
+        if not items:
+            raise ValueError("Empty page with a next cursor")
+        if next_cursor == cursor or next_cursor in cursors:
+            raise ValueError("Repeated pagination cursor")
+        cursors.add(next_cursor)
         cursor = next_cursor
+    print(f"INFO     API reported total: {expected_total if expected_total is not None else 'not supplied'}")
+    print(f"INFO     Fetched rows: {len(records)} across {page} pages")
+    if expected_total is not None and len(records) != expected_total:
+        raise ValueError(f"API count mismatch: fetched={len(records)} reported={expected_total}")
+    return index_rows(records, "API")
 
-    if expected_total is not None and inventory_count != expected_total:
-        raise RuntimeError(
-            f"Inventory count mismatch: fetched={inventory_count}, reported={expected_total}"
-        )
-    print(f"SUCCESS  Retrieved {inventory_count} listings across {page_count} pages")
-    print("SUCCESS  Read-only test completed; no inventory updates attempted")
+
+def read_csv(path):
+    with Path(path).open(encoding="utf-8-sig", newline="") as f:
+        reader = csv.DictReader(f)
+        if not reader.fieldnames or KEY not in reader.fieldnames or "quantity" not in reader.fieldnames:
+            raise ValueError("CSV must contain product_id and quantity columns")
+        return index_rows(list(reader), "CSV")
+
+
+def compare(api, exported):
+    only_api = sorted(api.keys() - exported.keys())
+    only_csv = sorted(exported.keys() - api.keys())
+    quantity_mismatches = []
+    for key in api.keys() & exported.keys():
+        a, b = quantity(api[key]), quantity(exported[key])
+        if a != b:
+            quantity_mismatches.append((key, a, b))
+    print(f"INFO     API-only product IDs: {len(only_api)}")
+    print(f"INFO     CSV-only product IDs: {len(only_csv)}")
+    print(f"INFO     Quantity mismatches on matching IDs: {len(quantity_mismatches)}")
+    for key in only_api[:10]:
+        row = api[key]
+        print(f"WARNING  API-only: {row.get('name', 'unknown')} | product_id={key}")
+    for key in only_csv[:10]:
+        row = exported[key]
+        print(f"WARNING  CSV-only: {row.get('name', 'unknown')} | product_id={key}")
+    for key, a, b in sorted(quantity_mismatches)[:10]:
+        row = exported[key]
+        print(f"WARNING  Quantity differs: {row.get('name', 'unknown')} | product_id={key} | API={a} CSV={b}")
+    if only_api or only_csv or quantity_mismatches:
+        raise ValueError("Inventory reconciliation failed; no changes attempted")
+    print("SUCCESS  API and CSV listing identities and quantities match")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--compare-csv", type=Path, help="Local ManaPool CSV export to reconcile against live API")
+    args = parser.parse_args()
+    api = fetch_inventory()
+    if args.compare_csv:
+        compare(api, read_csv(args.compare_csv))
+    else:
+        print("INFO     CSV comparison skipped (no --compare-csv supplied)")
+    print("SUCCESS  Read-only inventory validation completed")
 
 
 if __name__ == "__main__":
     try:
         main()
-    except (requests.RequestException, ValueError, KeyError, RuntimeError) as exc:
-        print(f"ERROR    Inventory test failed: {type(exc).__name__}", file=sys.stderr)
-        # Avoid dumping response bodies or exception text that might contain private data.
+    except (requests.RequestException, ValueError, KeyError, RuntimeError, OSError) as exc:
+        # Never print HTTP exception bodies or request headers; they may contain secrets.
+        if isinstance(exc, requests.RequestException):
+            print(f"ERROR    API request failed: {type(exc).__name__}", file=sys.stderr)
+        else:
+            print(f"ERROR    {exc}", file=sys.stderr)
         sys.exit(1)

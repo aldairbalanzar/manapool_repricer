@@ -111,3 +111,22 @@ Do not commit credentials, `.env` files containing secrets, or exported inventor
 ## Non-goals
 
 This project is **not** an inventory import/synchronization tool. It must not add cards, remove cards, change quantities, or automatically approve repricing changes.
+
+## Inventory integrity validation (current milestone)
+
+The manual **Test ManaPool Inventory (Read Only)** workflow now checks the API's reported total, pagination cursor repetition, missing/duplicate `product_id` values, and listing quantities. It does **not** change inventory or perform a CSV comparison unless a CSV is explicitly supplied.
+
+For an exact reconciliation against a downloaded ManaPool inventory export, run locally with the same read-only credentials set as environment variables:
+
+```bash
+python -m pip install -r requirements.txt
+python inventory.py --compare-csv /path/to/inventory-manapool.csv
+```
+
+The CSV must contain `product_id` and `quantity`. The comparison reports counts and up to ten examples of API-only IDs, CSV-only IDs, and mismatched quantities. Any discrepancy exits with an error. CSV exports may represent a different snapshot in time; normal sales and manual edits can cause differences. Never commit an inventory CSV or credentials to GitHub. The GitHub workflow intentionally runs API integrity validation only; for a CSV comparison, use the local command.
+
+## Credential validation (implemented)
+
+Before requesting inventory, `inventory.py` checks that `MANAPOOL_EMAIL` and `MANAPOOL_TOKEN` are present and nonempty. It logs only the variable names and whether each is configured; it never prints credential values. Missing credentials stop the run immediately. A successful inventory API response additionally verifies that ManaPool accepted the credentials.
+
+In GitHub, configure both under **Settings → Secrets and variables → Actions**. The workflow passes them to the script only for the inventory test step.
