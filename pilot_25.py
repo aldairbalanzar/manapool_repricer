@@ -17,6 +17,7 @@ from uuid import UUID
 import requests
 
 from inventory import fetch_inventory, quantity
+from account_visibility import run_offline
 from repricing_preview import (
     MIN_PRICE_CENTS, fetch_market_prices, generate_report, parse_cents,
     proposed_price,
@@ -50,7 +51,7 @@ def write_result(writer, handle, **values):
     handle.flush()
 
 
-def main():
+def execute_pilot():
     if os.environ.get("PILOT_CONFIRM") != CONFIRM:
         raise RuntimeError("Pilot confirmation missing. No changes made.")
     email = os.environ.get("MANAPOOL_EMAIL")
@@ -162,6 +163,12 @@ def main():
             time.sleep(0.5)
     log("SUCCESS", f"Pilot completed: {successes} verified price-only responses")
     log("WARNING", "Verify these 25 listings in ManaPool before expanding the rollout")
+
+
+def main():
+    if os.environ.get("PILOT_CONFIRM") != CONFIRM:
+        raise RuntimeError("Pilot confirmation missing. No changes made.")
+    run_offline(execute_pilot, log)
 
 
 if __name__ == "__main__":

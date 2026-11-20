@@ -39,3 +39,20 @@ This folder contains complete replacements/additions for the existing repository
 - A reported market low can include your own listing; the pilot cannot isolate competitor prices.
 
 **Note:** The pilot uses the first 25 eligible products in sorted product-ID order, which may all be floor increases. No particular card selection is promised. The API response verifies the update but is not an independent post-write GET check.
+
+## Offline / online safety (new)
+
+The manually dispatched **ManaPool Offline Repricing Pilot - 25 Updates** workflow
+reads `GET /account` before updating. If singles were live, it sets
+`PUT /account` with `{"singles_live": false}`, verifies via GET, updates up to
+25 prices, then restores and verifies `singles_live: true` in a `finally` block.
+If singles were already offline, they remain offline. Sealed listings and
+shipping settings are not intentionally modified. A failed pause blocks all
+price updates. If restoration fails (including network outages), the job fails
+and logs a CRITICAL message: check the ManaPool dashboard immediately.
+A forcibly canceled GitHub job or runner failure cannot execute Python cleanup;
+check singles visibility after any interrupted run. Keep the scheduled workflow
+in preview-only mode until this end-to-end pilot is verified.
+
+**Before running:** confirm the API token supports seller account settings write
+and inventory write. Use the workflow confirmation `CONFIRM_25_PRICE_UPDATES`.
