@@ -1,0 +1,29 @@
+name: ManaPool Emergency - Restore Singles Live
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: 'Type RESTORE_SINGLES_LIVE to set singles_live=true'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      MANAPOOL_EMAIL: ${{ secrets.MANAPOOL_EMAIL }}
+      MANAPOOL_TOKEN: ${{ secrets.MANAPOOL_TOKEN }}
+      RESTORE_CONFIRM: ${{ inputs.confirmation }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install 'requests>=2.31,<3'
+      - name: Restore singles visibility (manual emergency action)
+        run: python recover_visibility.py

@@ -1,58 +1,49 @@
-# ManaPool 25-listing live pilot
+# ManaPool nightly live repricer
 
-This folder contains complete replacements/additions for the existing repository. Keep your **existing `inventory.py` unchanged**.
-
-## Files
-
-- `repricing_preview.py` — current $0.01-above-low, $0.75-floor read-only report
-- `scheduled_repricing.py` — existing scheduled preview validation
-- `.github/workflows/scheduled-repricing.yml` — scheduled **read-only** preview
-- `pilot_25.py` — manual live pilot, maximum 25 price-only updates
-- `.github/workflows/pilot-25.yml` — manually triggered live pilot
-
-## Before running
-
-1. Review that `MANAPOOL_EMAIL` and `MANAPOOL_TOKEN` are configured as repository secrets. **The token must have inventory:write access.** Never paste it into chat or commit it.
-2. Replace/add the files in the repository (including the hidden `.github` directory).
-3. Commit and push to `main`.
-4. Go to **Actions → ManaPool Live Pilot - 25 Price Updates → Run workflow**.
-5. Enter `CONFIRM_25_PRICE_UPDATES` and run. This is a real write operation, not a preview.
-6. Download the `manapool-pilot-...` artifact and inspect `pilot_25_results.csv`.
-7. Verify prices and quantities in ManaPool before any larger rollout.
-
-## Safety
-
-- Hard cap **25** per invocation; no loop or automatic scheduling of this pilot.
-- A fresh report is generated, and seller inventory is fetched again before writes.
-- Aborts without writing if selected listings' prices or quantities changed before preflight.
-- Writes `{"price_cents": <target>, "quantity": null}` only, per documented endpoint.
-- Checks returned product ID, price and quantity after each update; stops on first failure.
-- A network timeout leaves outcome unknown: inspect ManaPool and the journal before retrying.
-- `pilot_25_results.csv` is flushed after every attempted update, but GitHub artifact upload happens after the job.
-- The 8 PM Eastern workflow **remains preview-only**. This pilot does not turn on unattended writes.
+This package replaces the old **read-only scheduled workflow** with an **opt-in** live workflow. It retains the existing `inventory.py` from your repository (DO NOT remove or replace it). It uses `requests` and Python 3.12.
 
 ## Pricing rules
 
-- Price floor is 75 cents.
-- If price is already at/below market low, do not lower it unless below floor.
-- If price is above market low, target max(75, market low + 1) cents.
-- A reported market low can include your own listing; the pilot cannot isolate competitor prices.
+- Only active `mtg_single` listings with positive quantity.
+- Raise listings below $0.75 to $0.75.
+- If above the reported market low, decrease to $0.01 **above** market low, never below $0.75.
+- If already at or below market low, leave unchanged (except floor).
+- The reported low can include your own listing. This is **not** a competitor-only price.
+- Write ONLY `{ "price_cents": target, "quantity": null }`. Never modify quantities.
+- One listing per API request, up to 10,000 eligible changes per run. Stop on API errors or verification mismatches. Skip stale listings detected during periodic inventory refreshes.
 
-**Note:** The pilot uses the first 25 eligible products in sorted product-ID order, which may all be floor increases. No particular card selection is promised. The API response verifies the update but is not an independent post-write GET check.
+## Install
 
-## Offline / online safety (new)
+Copy `full_repricing.py`, `account_visibility.py`, `repricing_preview.py`, `recover_visibility.py` and `.github/workflows/` into the root of your existing `manapool_repricer` repo. Keep your `inventory.py` and existing GitHub secrets `MANAPOOL_EMAIL`, `MANAPOOL_TOKEN`. The token must have inventory-write and seller-settings-write permissions. **Delete/disable the older pilot-25 workflow** to avoid accidentally running it.
 
-The manually dispatched **ManaPool Offline Repricing Pilot - 25 Updates** workflow
-reads `GET /account` before updating. If singles were live, it sets
-`PUT /account` with `{"singles_live": false}`, verifies via GET, updates up to
-25 prices, then restores and verifies `singles_live: true` in a `finally` block.
-If singles were already offline, they remain offline. Sealed listings and
-shipping settings are not intentionally modified. A failed pause blocks all
-price updates. If restoration fails (including network outages), the job fails
-and logs a CRITICAL message: check the ManaPool dashboard immediately.
-A forcibly canceled GitHub job or runner failure cannot execute Python cleanup;
-check singles visibility after any interrupted run. Keep the scheduled workflow
-in preview-only mode until this end-to-end pilot is verified.
+Commit and push to `main`. Merely pushing does **not** enable nightly live updates. The scheduled workflow will run but reject live writes until enabled.
 
-**Before running:** confirm the API token supports seller account settings write
-and inventory write. Use the workflow confirmation `CONFIRM_25_PRICE_UPDATES`.
+### First full run (manual)
+
+GitHub Actions → **ManaPool Scheduled Repricing (LIVE - Offline Guard)** → Run workflow → `main` → confirmation `CONFIRM_FULL_REPRICING`.
+
+This will update **all eligible listings**, not just 25. Observe the Actions log and check the ManaPool dashboard afterward. Download the `manapool-live-<run id>` artifact containing the full preview report and `repricing_updates.csv` journal.
+
+### Enable nightly at 8 PM Eastern
+
+After verifying the first full run, GitHub repository → Settings → Secrets and variables → Actions → **Variables** → New repository variable: `MANAPOOL_ENABLE_NIGHTLY` = `true` (exact lowercase). The scheduled cron fires at 00:00 and 01:00 UTC; Python's New York-hour guard skips the wrong one. GitHub-hosted cron can be delayed and isn't guaranteed to execute exactly at 8 PM.
+
+Set the variable to `false` (or delete it) to disable future scheduled price writes. Manual runs require confirmation even when the variable is enabled.
+
+## Offline/online safety
+
+The script checks `GET /account`, records original `singles_live`, sets it to `false`, and confirms it before making price writes. `sealed_live` and shipping are untouched. On normal success/errors it restores the **original** state (if it was already offline, it stays offline). It logs and fails if restoration cannot be confirmed.
+
+The internal deadline is 125 minutes, ahead of the GitHub Actions 150-minute job timeout. This is a **best-effort** safeguard. A runner crash, forced cancellation, loss of network, GitHub outage, or process kill can prevent the `finally` restoration. No workflow can guarantee restoration after the runner disappears.
+
+**Emergency recovery:** GitHub Actions → **ManaPool Emergency - Restore Singles Live** → Run workflow → confirmation `RESTORE_SINGLES_LIVE`. This **unconditionally sets singles live**; use it only when you want your store online. Unlike the main workflow, it has no concurrency lock, so do NOT run it while the repricer is actively changing prices. If GitHub Actions is unavailable, use the ManaPool seller dashboard to restore singles visibility manually. Verify `singles_live=true` afterward.
+
+## Operational precautions
+
+- The first full run could take over an hour; the store is offline while it runs.
+- A journal is written and flushed after each update. `VERIFIED_RESPONSE` confirms price and quantity in the PUT response, not a later independent GET.
+- Do not manually change listings while the repricer runs.
+- Because prices are derived from a snapshot, market changes during a run may make targets stale. Each update checks inventory freshness, but does not fetch the catalog low again per card.
+- If an update fails, the script stops and restores original visibility. Earlier successful changes remain in place; rerunning recalculates from current inventory.
+- Review `repricing_updates.csv` for `SKIPPED_STALE`, `UNKNOWN_NETWORK`, `HTTP_ERROR`, or `VERIFY_FAILED` statuses.
+- GitHub Actions workflow concurrency prevents overlapping price-update runs. The emergency recovery workflow intentionally bypasses this lock.

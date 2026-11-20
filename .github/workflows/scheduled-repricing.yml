@@ -1,28 +1,33 @@
-name: ManaPool Scheduled Repricing (Safe Preview)
+name: ManaPool Scheduled Repricing (LIVE - Offline Guard)
 
 on:
   workflow_dispatch:
+    inputs:
+      confirmation:
+        description: 'Type CONFIRM_FULL_REPRICING to authorize ALL eligible live price changes'
+        required: true
+        type: string
   schedule:
-    # Run at 8 PM America/New_York across DST changes.
-    # Both UTC hours trigger; Python skips the non-8-PM run.
+    # 8 PM New York across daylight saving changes; Python checks local hour.
     - cron: '0 0,1 * * *'
 
 permissions:
   contents: read
 
 concurrency:
-  group: manapool-scheduled-repricing
+  group: manapool-price-updates
   cancel-in-progress: false
 
 jobs:
   reprice:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 150
     env:
       MANAPOOL_EMAIL: ${{ secrets.MANAPOOL_EMAIL }}
       MANAPOOL_TOKEN: ${{ secrets.MANAPOOL_TOKEN }}
-      REPRICING_MODE: preview
       SCHEDULED_RUN: ${{ github.event_name == 'schedule' && '1' || '0' }}
+      # Schedule remains DISABLED until repository variable MANAPOOL_ENABLE_NIGHTLY = true.
+      FULL_REPRICING_CONFIRM: ${{ github.event_name == 'schedule' && vars.MANAPOOL_ENABLE_NIGHTLY == 'true' && 'CONFIRM_FULL_REPRICING' || inputs.confirmation }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -30,13 +35,15 @@ jobs:
           python-version: '3.12'
       - name: Install dependencies
         run: python -m pip install 'requests>=2.31,<3'
-      - name: Generate and validate repricing report
-        run: python scheduled_repricing.py
-      - name: Upload report for review
+      - name: Reprice while singles are offline and restore original visibility
+        run: python full_repricing.py
+      - name: Upload pricing report and journal
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: repricing-report-${{ github.run_id }}
-          path: repricing_report.csv
+          name: manapool-live-${{ github.run_id }}
+          path: |
+            repricing_report.csv
+            repricing_updates.csv
           if-no-files-found: ignore
           retention-days: 30
