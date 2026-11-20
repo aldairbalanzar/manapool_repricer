@@ -36,21 +36,37 @@ def money(value):
     return "" if value is None else f"{Decimal(value) / 100:.2f}"
 
 
-def fetch_catalog(url):
-    print("INFO     Fetching public product singles catalog (GET only)", flush=True)
-    response = requests.get(url, headers={"Accept": "application/json"}, timeout=180)
+def fetch_catalog():
+    print("INFO     Fetching public product singles catalog (GET only)")
+
+    url = "https://manapool.com/api/v1/products/singles"
+
+    response = requests.get(url, timeout=120)
+
     print(f"INFO     Catalog HTTP status: {response.status_code}")
-    response.raise_for_status()
+
+    if not response.ok:
+        try:
+            error = response.json()
+            print(f"ERROR    Catalog API error: {str(error)[:1000]}")
+        except ValueError:
+            print("ERROR    Catalog returned a non-JSON error response")
+
+        response.raise_for_status()
+
     payload = response.json()
-    if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
-        raise ValueError("Unexpected catalog structure; expected object with data array")
-    meta = payload.get("meta") or {}
-    as_of = meta.get("as_of") if isinstance(meta, dict) else None
-    print(f"INFO     Catalog card records: {len(payload['data'])}")
-    print(f"INFO     Catalog as_of: {as_of or 'unknown'}")
-    if not payload["data"]:
-        raise ValueError("Empty product singles catalog")
-    return payload["data"], as_of
+
+    if not isinstance(payload, dict):
+        raise ValueError("Unexpected catalog response format")
+
+    data = payload.get("data")
+
+    if not isinstance(data, list):
+        raise ValueError("Catalog response missing data array")
+
+    print(f"SUCCESS  Catalog returned {len(data)} records")
+
+    return data
 
 
 def index_variants(cards):
