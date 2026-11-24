@@ -16,6 +16,7 @@ from uuid import UUID
 
 import requests
 from account_visibility import run_offline
+from repricing_exceptions import load_exceptions
 from inventory import fetch_inventory, quantity
 from repricing_preview import MIN_PRICE_CENTS, fetch_market_prices, generate_report, parse_cents
 
@@ -48,7 +49,7 @@ def candidates_from_report():
     with REPORT.open(newline='', encoding='utf-8') as file:
         reader = csv.DictReader(file)
         required = {'product_id','card_name','action','quantity','current_price','target_price',
-                    'market_low','verification_status'}
+                    'market_low','verification_status','is_repricing_exception'}
         if not required.issubset(reader.fieldnames or []):
             raise RuntimeError('Incomplete pricing report')
         for row in reader:
@@ -59,6 +60,8 @@ def candidates_from_report():
             seen.add(pid)
             if row['action'] not in {'floor_increase','competitive_decrease'}:
                 continue
+            if row['is_repricing_exception'] != 'False':
+                raise RuntimeError(f'Unsafe exception candidate: {pid}')
             old, target = cents(row['current_price']), cents(row['target_price'])
             market = cents(row['market_low']) if row['market_low'] else None
             qty = int(row['quantity'])
@@ -125,7 +128,9 @@ def verify_bulk_response(selected, body):
 
 
 
-def run_updates():
+def run_updates(exceptions=None):
+    if exceptions is None:
+        exceptions = load_exceptions()
     start = time.monotonic()
     if REPORT.exists():
         REPORT.unlink()
@@ -134,7 +139,7 @@ def run_updates():
     active = {pid: item for pid, item in inventory.items() if quantity(item) > 0}
     if not active:
         raise RuntimeError('No active inventory; stopping')
-    generate_report(active, fetch_market_prices(active))
+    generate_report(active, fetch_market_prices(active), exceptions)
     candidates = candidates_from_report()
     log('INFO', f'Eligible live price changes: {len(candidates)}; safety cap {MAX_UPDATES}')
     fresh = fetch_inventory()
@@ -234,7 +239,8 @@ def main():
     def interrupted(signum, frame):
         raise RuntimeError('Received termination signal; attempting visibility restoration')
     signal.signal(signal.SIGTERM, interrupted)
-    run_offline(run_updates, log)
+    exceptions = load_exceptions()
+    run_offline(lambda: run_updates(exceptions), log)
 
 
 if __name__ == '__main__':

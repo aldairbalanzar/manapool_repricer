@@ -11,6 +11,7 @@ from pathlib import Path
 import requests
 
 from inventory import fetch_inventory, quantity
+from repricing_exceptions import load_exceptions, listing_identity
 
 PRODUCTS_URL = "https://manapool.com/api/v1/products/singles"
 REPORT_FILE = Path("repricing_report.csv")
@@ -26,7 +27,7 @@ LANGUAGES = [
     "HE", "KO", "LA", "PH", "PT", "RU", "SA", "QYA", "DW",
 ]
 REPORT_FIELDS = [
-    "product_id", "card_name", "set_code", "collector_number", "condition",
+    "product_id", "scryfall_id", "is_foil", "is_repricing_exception", "exception_reason", "card_name", "set_code", "collector_number", "condition",
     "finish", "language", "quantity", "current_price", "market_low",
     "target_price", "price_difference", "below_market_pct", "is_below_market",
     "possible_self_undercut", "approved", "action", "verification_status",
@@ -151,7 +152,10 @@ def proposed_price(current_cents, market_low_cents):
     return current_cents, "unchanged", "already_one_cent_above_market_low"
 
 
-def generate_report(active_inventory, variant_index):
+def generate_report(active_inventory, variant_index, exceptions=None):
+    if exceptions is None:
+        exceptions = load_exceptions()
+    log("INFO", f"Loaded {len(exceptions)} repricing exceptions")
     rows = []
     actions = Counter()
     statuses = Counter()
@@ -188,10 +192,25 @@ def generate_report(active_inventory, variant_index):
             status = "unmatched_product_floor_increase" if action == "floor_increase" else "unmatched_product"
             if action != "floor_increase":
                 action = "review"
+        key = None
+        try:
+            key = listing_identity(listing, card, variant)
+        except (ValueError, TypeError, AttributeError):
+            if exceptions:
+                target, action, status = current, "review", "exception_identity_unverified"
+        excluded = key in exceptions
+        if excluded:
+            target, action, status = current, "exception", "repricing_exception"
+        elif key and any(k[0] == key[0] and k[3] == key[3] for k in exceptions):
+            target, action, status = current, "review", "exception_metadata_conflict"
         # A low-price tie might include our own listing; no price change is proposed.
         possible_self_undercut = market_valid and current == market
         row = {
             "product_id": product_id,
+            "scryfall_id": key[0] if key else "",
+            "is_foil": key[3] if key else "",
+            "is_repricing_exception": excluded,
+            "exception_reason": exceptions[key] if excluded else "",
             "card_name": card.get("name") or "",
             "set_code": card.get("set_code") or "",
             "collector_number": card.get("number") or "",
@@ -217,6 +236,7 @@ def generate_report(active_inventory, variant_index):
         writer = csv.DictWriter(file, fieldnames=REPORT_FIELDS)
         writer.writeheader()
         writer.writerows(rows)
+    log("INFO", f"Listings excluded by exceptions: {actions['exception']}")
     log("SUCCESS", f"Generated {REPORT_FILE} with {len(rows)} active listings")
     for action, count in sorted(actions.items()):
         log("INFO", f"Action {action}: {count}")
