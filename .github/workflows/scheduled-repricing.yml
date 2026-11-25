@@ -28,6 +28,7 @@ jobs:
       SCHEDULED_RUN: ${{ github.event_name == 'schedule' && '1' || '0' }}
       # Schedule remains DISABLED until repository variable MANAPOOL_ENABLE_NIGHTLY = true.
       FULL_REPRICING_CONFIRM: ${{ github.event_name == 'schedule' && vars.MANAPOOL_ENABLE_NIGHTLY == 'true' && 'CONFIRM_FULL_REPRICING' || inputs.confirmation }}
+      MANAPOOL_MIN_PRICE_CENTS: ${{ vars.MANAPOOL_MIN_PRICE_CENTS || '75' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
