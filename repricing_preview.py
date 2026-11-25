@@ -1,4 +1,4 @@
-"""Read-only ManaPool repricing report: $0.01 above low, $0.75 floor, no writes."""
+"""Read-only ManaPool repricing report: $0.01 above low, configurable floor, no writes."""
 
 import csv
 import os
@@ -18,7 +18,14 @@ REPORT_FILE = Path("repricing_report.csv")
 BATCH_SIZE = 100
 REQUEST_TIMEOUT = 120
 REQUEST_DELAY_SECONDS = 0.25
-MIN_PRICE_CENTS = 75
+def read_min_price_cents():
+    raw = os.getenv("MANAPOOL_MIN_PRICE_CENTS", "75")
+    if not raw.isascii() or not raw.isdecimal() or int(raw) <= 0:
+        raise ValueError("MANAPOOL_MIN_PRICE_CENTS must be a positive integer in cents")
+    return int(raw)
+
+
+MIN_PRICE_CENTS = read_min_price_cents()
 ABOVE_LOW_CENTS = 1
 BELOW_MARKET_THRESHOLD = Decimal("0.20")
 BELOW_MARKET_MIN_CENTS = 500
@@ -133,7 +140,7 @@ def fetch_market_prices(active_inventory):
 def proposed_price(current_cents, market_low_cents):
     """Target 1 cent ABOVE the reported low, without chasing our own price.
 
-    Never change an at/below-low listing except to enforce the $0.75 floor.
+    Never change an at/below-low listing except to enforce the configurable floor.
     The reported low may include our own listing; it is not a competitor-only low.
     """
     if current_cents is None:
@@ -251,6 +258,7 @@ def generate_report(active_inventory, variant_index, exceptions=None):
 
 def main():
     log("INFO", "Starting ManaPool repricing preview")
+    log("INFO", f"Minimum listing price: {MIN_PRICE_CENTS} cents (${dollars(MIN_PRICE_CENTS)})")
     inventory = fetch_inventory()
     active = {
         product_id: listing

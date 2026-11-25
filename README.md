@@ -5,8 +5,8 @@ This package replaces the old **read-only scheduled workflow** with an **opt-in*
 ## Pricing rules
 
 - Only active `mtg_single` listings with positive quantity.
-- Raise listings below $0.75 to $0.75.
-- If above the reported market low, decrease to $0.01 **above** market low, never below $0.75.
+- Raise listings below the configured minimum to that minimum (default $0.75).
+- If above the reported market low, decrease to $0.01 **above** market low, never below the configured minimum.
 - If already at or below market low, leave unchanged (except floor).
 - The reported low can include your own listing. This is **not** a competitor-only price.
 - Write ONLY `{ "price_cents": target, "quantity": null }`. Never modify quantities.
@@ -81,3 +81,6 @@ Run tests from the repository root: `python -m unittest discover -s debug -p 'te
 
 ## Repricing exceptions
 Place one or more CSV files directly in `card_exception/` and commit them before running the workflow. All CSV files (including uppercase .CSV) are loaded in filename order; other files and nested directories are ignored. Duplicate identities are merged, with distinct reasons combined. Keep at least one header-only CSV if there are no exceptions. Move any old root-level `repricing_exceptions.csv` into this directory; the root file is no longer read. Required fields: `scryfall_id` (UUID), `card_name`, `set_code`, `is_foil` (`true` or `false`). `reason` is optional. All four fields match case-insensitively after trimming; condition and language are ignored. FO and EF both count as foil; NF is non-foil. Exceptions override the price floor. Missing directory, no CSV files, or any malformed CSV stops live execution before visibility changes. When exceptions exist, missing/conflicting API identity is held for review rather than repriced. Same ID/foil with conflicting name or set is also held for review. The report includes identity and exception fields. The CSV is public if your repository is public. Do not include private notes.
+
+## Configurable minimum price
+In GitHub Settings → Secrets and variables → Actions → Variables, set `MANAPOOL_MIN_PRICE_CENTS` to a positive integer in cents (e.g. `75`). Missing variable defaults to 75; invalid values stop execution before API writes or visibility changes. Local runs can set the same environment variable. Exceptions override the minimum. Changes apply on the next workflow run.

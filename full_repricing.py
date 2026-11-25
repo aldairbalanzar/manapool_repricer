@@ -239,6 +239,7 @@ def main():
     def interrupted(signum, frame):
         raise RuntimeError('Received termination signal; attempting visibility restoration')
     signal.signal(signal.SIGTERM, interrupted)
+    log("INFO", f"Minimum listing price: {MIN_PRICE_CENTS} cents")
     exceptions = load_exceptions()
     run_offline(lambda: run_updates(exceptions), log)
 
