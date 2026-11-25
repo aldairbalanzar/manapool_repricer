@@ -5,6 +5,7 @@ from uuid import UUID
 
 EXCEPTIONS_DIR = Path(__file__).resolve().with_name('card_exception')
 REQUIRED = {'scryfall_id', 'card_name', 'set_code', 'is_foil'}
+MANABOX = {'scryfall_id': 'Scryfall ID', 'card_name': 'Name', 'set_code': 'Set code', 'is_foil': 'Foil'}
 
 
 def normalized(value):
@@ -23,16 +24,22 @@ def _load_file(path):
     with path.open(encoding='utf-8-sig', newline='') as f:
         reader = csv.DictReader(f, strict=True)
         fields = reader.fieldnames or []
-        if not REQUIRED.issubset(fields) or len(fields) != len(set(fields)):
-            raise ValueError('Invalid exception CSV headers')
+        if len(fields) != len(set(fields)):
+            raise ValueError('Duplicate exception CSV headers')
+        custom = REQUIRED.issubset(fields)
+        manabox = set(MANABOX.values()).issubset(fields)
+        if custom == manabox:
+            raise ValueError('Invalid or ambiguous exception CSV headers')
+        columns = {k: k for k in REQUIRED} if custom else MANABOX
+        foil_values = {'true': True, 'false': False} if custom else {'normal': False, 'foil': True, 'etched': True}
         for row in reader:
             try:
-                if None in row or any(row[k] is None for k in REQUIRED):
+                if None in row or any(row[k] is None for k in fields):
                     raise ValueError('Invalid row length')
-                foil = normalized(row['is_foil'])
-                if foil not in ('true', 'false'):
-                    raise ValueError('is_foil must be true or false')
-                key = identity(row['scryfall_id'], row['card_name'], row['set_code'], foil == 'true')
+                foil = normalized(row[columns['is_foil']])
+                if foil not in foil_values:
+                    raise ValueError(f'Invalid foil value: {foil!r}')
+                key = identity(row[columns['scryfall_id']], row[columns['card_name']], row[columns['set_code']], foil_values[foil])
                 reason = (row.get('reason') or '').strip()
                 result[key] = _merge_reasons(result.get(key, ''), reason)
             except (ValueError, TypeError) as exc:
